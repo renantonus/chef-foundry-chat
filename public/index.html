@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Chef de Geladeira Vazia</title>
+  <meta name="description" content="Converse com o Chef de Geladeira Vazia: receitas com o que você já tem em casa.">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <script src="js/theme.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#input">Pular para o campo de mensagem</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <img src="img/icon.svg" alt="" width="36" height="36">
+      <div>
+        <strong>Chef de Geladeira Vazia</strong>
+        <span class="status" id="status"><span class="dot"></span> Conectando…</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="historyBtn" aria-controls="drawer" aria-expanded="false" title="Conversas anteriores">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4M12 7v5l3 2"/></svg><span class="label">Conversas</span>
+      </button>
+      <button class="btn ghost" id="newBtn" title="Começar uma nova conversa">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="label">Nova conversa</span>
+      </button>
+      <button class="btn ghost icon" id="themeBtn" aria-label="Alternar tema claro ou escuro">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <aside class="drawer" id="drawer" aria-label="Conversas anteriores" hidden>
+    <div class="drawer-head">
+      <h2>Conversas anteriores</h2>
+      <button class="btn ghost icon" id="closeDrawer" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="drawer-note">Ficam salvas só neste navegador.</p>
+    <ul class="history" id="history"></ul>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="chat" id="main">
+    <section class="welcome" id="welcome">
+      <img src="img/fridge.svg" alt="" class="welcome-art" width="168" height="168">
+      <h1>Abriu a geladeira e não sabe o que fazer?</h1>
+      <p>Me conta o que você tem em casa e eu monto uma receita só com isso, mais sal, óleo e água. Se puder, diga também alergias, quanto tempo tem, para quantas pessoas e quais utensílios.</p>
+      <div class="suggestions" id="suggestions" aria-label="Sugestões para começar"></div>
+    </section>
+    <ol class="messages" id="messages" aria-live="polite" aria-label="Conversa com o Chef"></ol>
+  </main>
+
+  <footer class="composer">
+    <form id="form" class="composer-box">
+      <label for="input" class="sr-only">Mensagem para o Chef</label>
+      <textarea id="input" rows="1" maxlength="1000" placeholder="Ex.: tenho 2 ovos, queijo e tomate" autocomplete="off"></textarea>
+      <button class="send" id="send" type="submit" aria-label="Enviar mensagem">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+      </button>
+    </form>
+    <div class="composer-foot">
+      <span>Enter envia · Shift + Enter quebra a linha</span>
+      <span id="counter">0/1000</span>
+    </div>
+    <p class="disclaimer">Respostas geradas por IA podem conter erros. Em caso de alergia grave, procure atendimento médico (SAMU 192).</p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/markdown.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
