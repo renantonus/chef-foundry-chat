@@ -152,4 +152,3 @@ Ele mostra a conta do Azure usada, cria uma conversa e testa os formatos de cham
 
 - [@azure/identity](https://www.npmjs.com/package/@azure/identity) (Microsoft): autenticação no Entra ID.
 - Documentação do Microsoft Foundry: [quickstart de agentes](https://learn.microsoft.com/azure/foundry/agents/quickstarts/prompt-agent) e [exemplos REST de Responses e Conversations](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/function-calling).
-- Desenvolvido com apoio de IA (Claude, da Anthropic), conforme descrito no documento do processo.
