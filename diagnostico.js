@@ -66,12 +66,40 @@ async function main() {
     ["5. resposta v1 + agent_reference, sem conversa", "/openai/v1/responses", { agent_reference: ref, input }],
     ["6. resposta preview + agent", `/openai/responses?${PREVIEW}`, { agent: ref, conversation: conv, input }]
   ];
+  let working = null;
   for (const [label, path, body] of variants) {
     if (!conv) delete body.conversation;
     const r = await call(label, path, body);
     if (r.status === 200) {
       console.log(`\n>>> A variação "${label}" FUNCIONOU.`);
+      working = { path, body };
       break;
+    }
+  }
+
+  // Teste do streaming (resposta aos poucos), usando a variação que funcionou.
+  if (working) {
+    console.log("\n--- 7. streaming (stream: true)");
+    try {
+      const res = await fetch(cfg.endpoint + working.path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...working.body, input: "Responda só: ok", stream: true })
+      });
+      const type = res.headers.get("content-type") || "";
+      console.log(`status: ${res.status} | content-type: ${type}`);
+      const text = await res.text();
+      if (res.ok && type.includes("text/event-stream")) {
+        const pieces = (text.match(/"type":\s*"response\.output_text\.delta"/g) || []).length;
+        console.log(`>>> STREAMING FUNCIONA: a resposta veio em ${pieces} pedaço(s).`);
+      } else if (res.ok) {
+        console.log(">>> O Foundry respondeu de uma vez (sem streaming). O chat funciona do mesmo jeito.");
+      } else {
+        console.log(text.slice(0, 400));
+        console.log(">>> O Foundry recusou o streaming. O chat volta sozinho para a resposta inteira.");
+      }
+    } catch (err) {
+      console.log("erro de rede:", err.message);
     }
   }
 }

@@ -6,6 +6,8 @@
  * 2. Cria uma conversa (POST {endpoint}/openai/v1/conversations) só na primeira mensagem.
  * 3. Envia cada mensagem para o agente (POST {endpoint}/openai/v1/responses),
  *    referenciando o agente pelo nome e reutilizando o id da conversa (multi-turno).
+ * 4. Com "stream": true, o Foundry devolve o texto aos poucos (streaming); se ele recusar,
+ *    o cliente volta sozinho para a resposta inteira.
  *
  * O token NUNCA vai para o navegador: este arquivo só roda no servidor.
  */
@@ -18,7 +20,7 @@ class AgentError extends Error {
   constructor(code, detail, httpStatus) {
     super(detail || code);
     this.name = "AgentError";
-    this.code = code; // auth | not_found | conversation_not_found | rate_limit | timeout | network | unavailable | bad_response
+    this.code = code; // auth | not_found | conversation_not_found | rate_limit | timeout | network | unavailable | bad_response | aborted
     this.httpStatus = httpStatus || null;
   }
 }
@@ -108,10 +110,38 @@ function errorFromStatus(status, bodyText, path) {
  * @param {number} [opts.timeoutMs] Tempo máximo de espera por chamada
  */
 function createFoundryClient({ endpoint, agentName, agentVersion, getToken, fetchImpl = fetch, timeoutMs = 60000 }) {
-  async function post(path, body) {
+  /**
+   * Faz um POST ao Foundry e devolve a resposta ainda "aberta" (o corpo é lido depois).
+   * O relógio de espera (timeout) pode ser reiniciado com touch(): no streaming, cada pedaço
+   * que chega reinicia a contagem. `signal` permite cancelar (o usuário clicou em "Parar").
+   */
+  async function request(path, body, signal) {
     const token = await getToken();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    let timer;
+    const touch = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    };
+    const onAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const done = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+    /** Traduz uma falha do fetch (ou da leitura do corpo) para um erro nosso. */
+    const fail = (err) => {
+      if (err instanceof AgentError) return err;
+      if (err.name === "AbortError" || controller.signal.aborted) {
+        return timedOut ? new AgentError("timeout", `Sem resposta em ${timeoutMs} ms`) : new AgentError("aborted", "Chamada cancelada");
+      }
+      return new AgentError("network", `Falha de rede ao chamar o Foundry: ${err.message}`);
+    };
+    touch();
     let res;
     try {
       res = await fetchImpl(endpoint + path, {
@@ -121,13 +151,23 @@ function createFoundryClient({ endpoint, agentName, agentVersion, getToken, fetc
         signal: controller.signal
       });
     } catch (err) {
-      if (err.name === "AbortError") throw new AgentError("timeout", `Sem resposta em ${timeoutMs} ms`);
-      throw new AgentError("network", `Falha de rede ao chamar o Foundry: ${err.message}`);
-    } finally {
-      clearTimeout(timer);
+      done();
+      throw fail(err);
     }
-    const text = await res.text();
-    if (!res.ok) throw errorFromStatus(res.status, text, path);
+    if (!res.ok) {
+      let text = "";
+      try { text = await res.text(); } catch { /* sem corpo */ }
+      done();
+      throw errorFromStatus(res.status, text, path);
+    }
+    return { res, touch, done, fail };
+  }
+
+  /** POST simples: espera a resposta inteira e devolve o JSON. */
+  async function post(path, body, signal) {
+    const call = await request(path, body, signal);
+    let text;
+    try { text = await call.res.text(); } catch (err) { throw call.fail(err); } finally { call.done(); }
     try {
       return JSON.parse(text);
     } catch {
@@ -146,29 +186,122 @@ function createFoundryClient({ endpoint, agentName, agentVersion, getToken, fetc
   // Se o Foundry recusar um formato (400), o cliente tenta o outro uma vez e lembra qual funcionou.
   let agentField = "agent_reference";
 
-  /** Envia a mensagem do usuário ao agente, dentro da conversa, e devolve o texto da resposta. */
-  async function sendMessage(conversationId, message) {
+  /** Chama a Responses API referenciando o agente; `call` é post (resposta inteira) ou request (streaming). */
+  async function callAgent(call, conversationId, message, extra, signal) {
     const ref = { type: "agent_reference", name: agentName };
     if (agentVersion) ref.version = agentVersion;
-    const bodyFor = (field) => ({ [field]: ref, conversation: conversationId, input: message });
-    let data;
+    const bodyFor = (field) => ({ [field]: ref, conversation: conversationId, input: message, ...extra });
     try {
-      data = await post("/openai/v1/responses", bodyFor(agentField));
+      return await call("/openai/v1/responses", bodyFor(agentField), signal);
     } catch (err) {
       if (!(err instanceof AgentError) || err.httpStatus !== 400 || err.code !== "unavailable") throw err;
       const other = agentField === "agent_reference" ? "agent" : "agent_reference";
-      data = await post("/openai/v1/responses", bodyFor(other));
+      const result = await call("/openai/v1/responses", bodyFor(other), signal);
       agentField = other;
+      return result;
     }
+  }
+
+  /** Confere a resposta completa do agente e devolve o texto. */
+  function replyFrom(data) {
     if (data.status === "failed" || data.error) {
-      throw new AgentError("unavailable", `O agente falhou: ${(data.error && data.error.code) || data.status}`);
+      throw new AgentError("unavailable", `O agente falhou: ${(data.error && (data.error.message || data.error.code)) || data.status}`);
     }
     const reply = extractReplyText(data);
     if (!reply) throw new AgentError("bad_response", "O agente respondeu sem texto");
     return reply;
   }
 
-  return { createConversation, sendMessage };
+  /** Envia a mensagem do usuário ao agente, dentro da conversa, e devolve o texto da resposta (de uma vez). */
+  async function sendMessage(conversationId, message, signal) {
+    return replyFrom(await callAgent(post, conversationId, message, {}, signal));
+  }
+
+  // Se o Foundry recusar o streaming, o cliente passa a pedir a resposta inteira.
+  let streamSupported = true;
+
+  /**
+   * Igual ao sendMessage, mas em streaming: chama onDelta(pedaço) a cada trecho de texto que chega.
+   * O Foundry responde em Server-Sent Events (SSE): blocos "data: {json}" separados por linha em branco.
+   * Os eventos que interessam: response.output_text.delta (pedaço do texto) e response.completed (fim).
+   * Devolve o texto completo no final.
+   */
+  async function streamMessage(conversationId, message, onDelta, signal) {
+    const whole = async () => {
+      const reply = await sendMessage(conversationId, message, signal);
+      onDelta(reply);
+      return reply;
+    };
+    if (!streamSupported) return whole();
+
+    let call;
+    try {
+      call = await callAgent(request, conversationId, message, { stream: true }, signal);
+    } catch (err) {
+      // 400 só no pedido com streaming: tenta sem. Se funcionar, não pede mais streaming.
+      if (!(err instanceof AgentError) || err.httpStatus !== 400 || err.code !== "unavailable") throw err;
+      const reply = await whole();
+      streamSupported = false;
+      return reply;
+    }
+
+    const { res, touch, done, fail } = call;
+    try {
+      // O Foundry ignorou o "stream" e mandou a resposta inteira em JSON.
+      if (!(res.headers.get("content-type") || "").includes("text/event-stream")) {
+        let data;
+        try { data = JSON.parse(await res.text()); } catch { throw new AgentError("bad_response", "O Foundry respondeu algo que não é JSON"); }
+        const reply = replyFrom(data);
+        onDelta(reply);
+        return reply;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let text = "";
+      let finalData = null;
+      const handleEvent = (block) => {
+        const dataLines = block.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+        if (!dataLines.length || dataLines[0] === "[DONE]") return;
+        let ev;
+        try { ev = JSON.parse(dataLines.join("\n")); } catch { return; }
+        if (ev.type === "response.output_text.delta" && typeof ev.delta === "string" && ev.delta) {
+          text += ev.delta;
+          onDelta(ev.delta);
+        } else if (ev.type === "response.completed" || ev.type === "response.incomplete") {
+          finalData = ev.response || null;
+        } else if (ev.type === "response.failed" || ev.type === "error") {
+          const e = (ev.response && ev.response.error) || ev.error || ev;
+          throw new AgentError("unavailable", `O agente falhou: ${e.message || e.code || "erro no streaming"}`);
+        }
+      };
+      for await (const chunk of res.body) {
+        touch();
+        buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, "\n");
+        let cut;
+        while ((cut = buffer.indexOf("\n\n")) !== -1) {
+          handleEvent(buffer.slice(0, cut));
+          buffer = buffer.slice(cut + 2);
+        }
+      }
+      if (buffer.trim()) handleEvent(buffer);
+
+      if (!text && finalData) {
+        // Não vieram pedaços, mas veio a resposta final completa.
+        const reply = replyFrom(finalData);
+        onDelta(reply);
+        return reply;
+      }
+      if (!text.trim()) throw new AgentError("bad_response", "O agente respondeu sem texto");
+      return text.trim();
+    } catch (err) {
+      throw fail(err);
+    } finally {
+      done();
+    }
+  }
+
+  return { createConversation, sendMessage, streamMessage };
 }
 
 module.exports = { createFoundryClient, createTokenProvider, extractReplyText, AgentError, TOKEN_SCOPE };

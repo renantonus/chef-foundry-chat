@@ -34,7 +34,7 @@ test("health não expõe o endpoint nem segredos", async () => {
   const app = await startApp();
   const res = await fetch(app.base + "/api/health");
   const json = await res.json();
-  assert.deepStrictEqual(json, { ok: true, configured: true, agent: "automatenan" });
+  assert.deepStrictEqual(json, { ok: true, configured: true, agent: "automatenan", streaming: true });
   assert.ok(!JSON.stringify(json).includes("127.0.0.1"));
   await app.close();
 });
@@ -196,5 +196,97 @@ test("log mostra a mensagem de erro do Foundry para diagnóstico", async () => {
   const app = await startApp();
   await chat(app.base, { message: "ERRO500" });
   assert.ok(app.logs.some((l) => l.includes("detalhe técnico interno")));
+  await app.close();
+});
+
+/* ---------- streaming ---------- */
+const chatStream = (base, body) =>
+  fetch(base + "/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const readEvents = async (res) => (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+
+test("streaming: a resposta chega em pedaços e termina com o texto completo", async () => {
+  const app = await startApp();
+  const res = await chatStream(app.base, { message: "tenho ovo e tomate" });
+  assert.strictEqual(res.status, 200);
+  assert.match(res.headers.get("content-type"), /ndjson/);
+  const events = await readEvents(res);
+  assert.strictEqual(events[0].type, "meta");
+  const deltas = events.filter((e) => e.type === "delta");
+  assert.ok(deltas.length > 3, "deveria vir em vários pedaços");
+  const done = events[events.length - 1];
+  assert.strictEqual(done.type, "done");
+  assert.strictEqual(deltas.map((d) => d.text).join("").trim(), done.reply);
+  assert.strictEqual(done.conversationId, events[0].conversationId);
+  assert.strictEqual(app.mock.requests.find((r) => r.path.endsWith("/responses")).body.stream, true);
+  await app.close();
+});
+
+test("streaming: multi-turno reutiliza a conversa", async () => {
+  const app = await startApp();
+  const first = (await readEvents(await chatStream(app.base, { message: "oi" }))).pop();
+  const second = (await readEvents(await chatStream(app.base, { message: "de novo", conversationId: first.conversationId }))).pop();
+  assert.strictEqual(second.conversationId, first.conversationId);
+  assert.match(second.reply, /^Mensagem 2 /);
+  await app.close();
+});
+
+test("streaming: se o Foundry recusar o stream, usa a resposta inteira e não pede stream de novo", async () => {
+  const app = await startApp({}, {}, { streaming: "reject" });
+  const events = await readEvents(await chatStream(app.base, { message: "oi" }));
+  assert.strictEqual(events.pop().type, "done");
+  assert.strictEqual(events.filter((e) => e.type === "delta").length, 1);
+  await readEvents(await chatStream(app.base, { message: "oi de novo" }));
+  const calls = app.mock.requests.filter((r) => r.path.endsWith("/responses"));
+  assert.strictEqual(calls[calls.length - 1].body.stream, undefined);
+  await app.close();
+});
+
+test("streaming: Foundry que ignora o stream e responde JSON também funciona", async () => {
+  const app = await startApp({}, {}, { streaming: "ignore" });
+  const events = await readEvents(await chatStream(app.base, { message: "oi" }));
+  assert.match(events.pop().reply, /^Mensagem 1 /);
+  await app.close();
+});
+
+test("streaming desligado (STREAMING=off) devolve a resposta em um pedaço só", async () => {
+  const app = await startApp({ streaming: false });
+  const events = await readEvents(await chatStream(app.base, { message: "oi" }));
+  assert.deepStrictEqual(events.map((e) => e.type), ["meta", "delta", "done"]);
+  assert.strictEqual(app.mock.requests.find((r) => r.path.endsWith("/responses")).body.stream, undefined);
+  await app.close();
+});
+
+test("streaming: erro antes do primeiro pedaço vira erro JSON amigável", async () => {
+  const app = await startApp();
+  const res = await chatStream(app.base, { message: "ERRO500" });
+  const json = await res.json();
+  assert.strictEqual(res.status, 503);
+  assert.match(json.error.message, /indisponível/);
+  assert.ok(!JSON.stringify(json).includes("detalhe técnico"));
+  await app.close();
+});
+
+test("streaming: falha no meio da resposta vira evento de erro sem detalhe técnico", async () => {
+  const app = await startApp();
+  const res = await chatStream(app.base, { message: "QUEBRA" });
+  const raw = await res.text();
+  const events = raw.trim().split("\n").map((l) => JSON.parse(l));
+  assert.strictEqual(events.pop().type, "error");
+  assert.ok(!raw.includes("detalhe técnico"));
+  assert.ok(app.logs.some((l) => l.includes("detalhe técnico interno")));
+  await app.close();
+});
+
+test("streaming: valida a mensagem do mesmo jeito (400)", async () => {
+  const app = await startApp();
+  assert.strictEqual((await chatStream(app.base, { message: "   " })).status, 400);
+  assert.strictEqual((await chatStream(app.base, { message: "x".repeat(1001) })).status, 400);
+  await app.close();
+});
+
+test("streaming: demora excessiva vira 504", async () => {
+  const app = await startApp();
+  const res = await chatStream(app.base, { message: "LENTO" });
+  assert.strictEqual(res.status, 504);
   await app.close();
 });

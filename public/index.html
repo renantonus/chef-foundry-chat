@@ -21,6 +21,9 @@
       </div>
     </div>
     <div class="actions">
+      <button class="btn ghost" id="savedBtn" aria-controls="drawer" title="Receitas salvas">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg><span class="label">Receitas</span>
+      </button>
       <button class="btn ghost" id="historyBtn" aria-controls="drawer" aria-expanded="false" title="Conversas anteriores">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4M12 7v5l3 2"/></svg><span class="label">Conversas</span>
       </button>
@@ -33,15 +36,27 @@
     </div>
   </header>
 
-  <aside class="drawer" id="drawer" aria-label="Conversas anteriores" hidden>
+  <!-- Painel lateral: conversas anteriores e receitas salvas -->
+  <aside class="drawer" id="drawer" aria-label="Conversas e receitas" hidden>
     <div class="drawer-head">
-      <h2>Conversas anteriores</h2>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tabHistory" aria-selected="true" aria-controls="panelHistory">Conversas</button>
+        <button type="button" role="tab" id="tabSaved" aria-selected="false" aria-controls="panelSaved">Receitas salvas</button>
+      </div>
       <button class="btn ghost icon" id="closeDrawer" aria-label="Fechar">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
     <p class="drawer-note">Ficam salvas só neste navegador.</p>
-    <ul class="history" id="history"></ul>
+    <div id="panelHistory" role="tabpanel" aria-labelledby="tabHistory" class="panel">
+      <ul class="history" id="history"></ul>
+      <button type="button" class="btn small" id="exportBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>Baixar conversa atual (.txt)
+      </button>
+    </div>
+    <div id="panelSaved" role="tabpanel" aria-labelledby="tabSaved" class="panel" hidden>
+      <ul class="history" id="saved"></ul>
+    </div>
   </aside>
   <div class="scrim" id="scrim" hidden></div>
 
@@ -50,13 +65,28 @@
       <img src="img/fridge.svg" alt="" class="welcome-art" width="168" height="168">
       <h1>Abriu a geladeira e não sabe o que fazer?</h1>
       <p>Me conta o que você tem em casa e eu monto uma receita só com isso, mais sal, óleo e água. Se puder, diga também alergias, quanto tempo tem, para quantas pessoas e quais utensílios.</p>
+      <button type="button" class="btn primary" id="fridgeCta">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M6 10h12M10 6v1M10 14v3"/></svg>Montar minha geladeira
+      </button>
+      <p class="or">ou comece por uma sugestão</p>
       <div class="suggestions" id="suggestions" aria-label="Sugestões para começar"></div>
     </section>
-    <ol class="messages" id="messages" aria-live="polite" aria-label="Conversa com o Chef"></ol>
+    <ol class="messages" id="messages" aria-label="Conversa com o Chef"></ol>
+    <div class="sr-only" id="live" aria-live="polite"></div>
   </main>
 
+  <!-- Timers de cozinha em andamento -->
+  <div class="timers" id="timers" aria-label="Timers de cozinha" aria-live="polite"></div>
+
   <footer class="composer">
+    <div class="quick" id="quick" aria-label="Respostas rápidas"></div>
     <form id="form" class="composer-box">
+      <button type="button" class="tool" id="fridgeBtn" title="Montar o pedido com ingredientes e preferências" aria-label="Minha geladeira: montar o pedido">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M6 10h12M10 6v1M10 14v3"/></svg>
+      </button>
+      <button type="button" class="tool" id="micBtn" title="Ditar por voz" aria-label="Ditar a mensagem por voz" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
       <label for="input" class="sr-only">Mensagem para o Chef</label>
       <textarea id="input" rows="1" maxlength="1000" placeholder="Ex.: tenho 2 ovos, queijo e tomate" autocomplete="off"></textarea>
       <button class="send" id="send" type="submit" aria-label="Enviar mensagem">
@@ -70,9 +100,83 @@
     <p class="disclaimer">Respostas geradas por IA podem conter erros. Em caso de alergia grave, procure atendimento médico (SAMU 192).</p>
   </footer>
 
+  <!-- Minha geladeira: monta a mensagem com ingredientes e preferências -->
+  <dialog class="sheet" id="fridgeDialog" aria-labelledby="fridgeTitle">
+    <form method="dialog" class="sheet-head">
+      <h2 id="fridgeTitle">Minha geladeira</h2>
+      <button class="btn ghost icon" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </form>
+    <div class="sheet-body">
+      <p class="hint">Marque o que você tem. O Chef usa só isso, mais sal, óleo e água.</p>
+      <div id="fridgeGroups"></div>
+      <label class="field">Outros ingredientes (separe por vírgula)
+        <input type="text" id="fridgeOther" maxlength="200" placeholder="Ex.: 2 ovos, meia abóbora, sobra de frango" autocomplete="off">
+      </label>
+
+      <div class="prefs">
+        <fieldset>
+          <legend>Para quantas pessoas?</legend>
+          <div class="stepper">
+            <button type="button" id="peopleMinus" aria-label="Menos uma pessoa">−</button>
+            <output id="peopleOut" aria-live="polite">1</output>
+            <button type="button" id="peoplePlus" aria-label="Mais uma pessoa">+</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Quanto tempo você tem?</legend>
+          <div class="chips" id="fridgeTime"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Utensílios</legend>
+          <div class="chips" id="fridgeTools"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Restrições</legend>
+          <div class="chips" id="fridgeDiet"></div>
+        </fieldset>
+      </div>
+      <label class="field">Alergias (deixe em branco se não tiver)
+        <input type="text" id="fridgeAllergy" maxlength="120" placeholder="Ex.: amendoim, camarão" autocomplete="off">
+      </label>
+
+      <div class="preview">
+        <strong>Mensagem que vai para o Chef</strong>
+        <p id="fridgePreview"></p>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn ghost" id="fridgeClear">Limpar</button>
+      <button type="button" class="btn" id="fridgeFill">Editar antes</button>
+      <button type="button" class="btn primary" id="fridgeSend">Enviar ao Chef</button>
+    </div>
+  </dialog>
+
+  <!-- Receita salva aberta -->
+  <dialog class="sheet" id="recipeDialog" aria-labelledby="recipeTitle">
+    <form method="dialog" class="sheet-head">
+      <h2 id="recipeTitle">Receita salva</h2>
+      <button class="btn ghost icon" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </form>
+    <div class="sheet-body md" id="recipeBody"></div>
+    <div class="sheet-foot">
+      <button type="button" class="btn ghost" id="recipeDelete">Apagar</button>
+      <button type="button" class="btn" id="recipeCopy">Copiar</button>
+      <button type="button" class="btn primary" id="recipePrint">Imprimir</button>
+    </div>
+  </dialog>
+
+  <!-- Só aparece na impressão -->
+  <div id="printArea" class="md" aria-hidden="true"></div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="js/markdown.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/montador.js"></script>
+  <script src="js/cozinha.js"></script>
 </body>
 </html>

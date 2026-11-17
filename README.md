@@ -12,6 +12,10 @@ Conversa real com o agente `automatenan` no Foundry (ele pergunta restrições, 
 
 ![Conversa real com o agente no Foundry](docs/conversa-real.png)
 
+"Minha geladeira", que monta o pedido com ingredientes e preferências:
+
+![Minha geladeira: montador de pedido](docs/minha-geladeira.png)
+
 ## Arquitetura
 
 ```mermaid
@@ -25,8 +29,9 @@ flowchart LR
 1. O navegador envia a mensagem para o **nosso** back end (`POST /api/chat`). O front end não conhece o endpoint do Foundry e não tem nenhuma chave.
 2. O back end valida a mensagem (texto, não vazia, até 1000 caracteres) e pega um token do **Microsoft Entra ID** com o `DefaultAzureCredential` (escopo `https://ai.azure.com/.default`).
 3. Na primeira mensagem, o back end cria uma conversa no Foundry (`POST {endpoint}/openai/v1/conversations`) e devolve o `conversationId` ao navegador.
-4. Cada mensagem vai para o agente pela Responses API (`POST {endpoint}/openai/v1/responses`), com a referência ao agente (`"agent_reference": { "type": "agent_reference", "name": "automatenan" }`) e o mesmo `conversationId`. É isso que mantém o contexto entre as mensagens (multi-turno).
-5. O botão **Nova conversa** descarta o `conversationId`, e a próxima mensagem cria outra conversa.
+4. O navegador chama `POST /api/chat/stream` e recebe a resposta aos poucos. O back end pede a resposta ao Foundry com `"stream": true` e repassa cada pedaço de texto. Se o Foundry recusar o streaming, o back end pede a resposta inteira e o chat continua funcionando. A rota `POST /api/chat` (resposta de uma vez) continua disponível.
+5. Cada mensagem vai para o agente pela Responses API (`POST {endpoint}/openai/v1/responses`), com a referência ao agente (`"agent_reference": { "type": "agent_reference", "name": "automatenan" }`) e o mesmo `conversationId`. É isso que mantém o contexto entre as mensagens (multi-turno).
+6. O botão **Nova conversa** descarta o `conversationId`, e a próxima mensagem cria outra conversa.
 
 | Componente | Responsabilidade |
 | --- | --- |
@@ -41,12 +46,27 @@ flowchart LR
 | RF1 Tela de chat | Campo de mensagem, botão de envio e histórico com as mensagens do usuário e do agente |
 | RF2 Integração real | `server/foundry.js` chama o agente no Foundry pelo back end |
 | RF3 Multi-turno | `conversationId` criado uma vez e reutilizado a cada mensagem |
-| RF4 Carregamento | "O Chef está pensando…" e, depois de 12 s, aviso de que está demorando |
+| RF4 Carregamento | "O Chef está pensando…", aviso depois de 12 s e resposta aparecendo aos poucos; o botão de enviar vira "Parar" |
 | RF5 Erros amigáveis | Agente indisponível (503), demora excessiva (504), falha de rede (502), limite de uso (429), sem internet; botão "Tentar de novo" |
 | RF6 Nova conversa | Botão no topo |
 | RF7 Responsivo | Testado em celular (390 px) e computador (1280 px) |
 | RF8 Identidade visual | Nome, cores terracota, ilustração e boas-vindas do Chef |
-| Extras | Markdown nas respostas, sugestões clicáveis, histórico de conversas, 👍/👎 por resposta, modo escuro, botão copiar |
+| Extras do enunciado | Resposta em streaming, markdown nas respostas, sugestões clicáveis, histórico de conversas, 👍/👎 por resposta, modo escuro |
+
+### Recursos da versão 2
+
+| Recurso | O que faz |
+| --- | --- |
+| Resposta em streaming | O texto do Chef aparece aos poucos. O botão de enviar vira "Parar" e interrompe a resposta |
+| Minha geladeira | Monta a mensagem com ingredientes clicáveis, número de pessoas, tempo, utensílios, restrições e alergias. O Chef recebe tudo de uma vez e não precisa perguntar antes |
+| Respostas rápidas | Depois de cada resposta, sugestões de continuação ("Me dá outra opção", "Tem como fazer mais rápido?") |
+| Receitas salvas | Botão "Salvar" em cada resposta; as receitas ficam na aba "Receitas", com copiar, imprimir e apagar |
+| Timers de cozinha | Os tempos da receita ("5 minutos") viram botões que iniciam uma contagem regressiva com aviso sonoro |
+| Lista de ingredientes | Tocar num ingrediente risca o que já foi separado |
+| Ouvir e ditar | Lê a resposta em voz alta e escreve a mensagem pela voz (quando o navegador tem esses recursos) |
+| Compartilhar, imprimir e baixar | Compartilha ou imprime uma receita e baixa a conversa em `.txt` |
+
+Timers, voz, receitas salvas e a "Minha geladeira" rodam só no navegador. Nada disso passa pelo servidor nem muda a forma de falar com o agente.
 
 ## Pré-requisitos
 
@@ -84,6 +104,7 @@ No Windows, depois dos passos 2 e 3, também dá para dar dois cliques em `inici
 | `AGENT_TIMEOUT_MS` | Não | Tempo máximo esperando o agente (padrão 60000) |
 | `MAX_MESSAGE_LENGTH` | Não | Tamanho máximo da mensagem (padrão 1000) |
 | `RATE_LIMIT_PER_MINUTE` | Não | Mensagens por minuto por usuário (padrão 20) |
+| `STREAMING` | Não | `on` (padrão) mostra a resposta aos poucos; `off` devolve a resposta de uma vez |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Só para publicar | Login por service principal quando a aplicação roda num servidor online, sem `az login` |
 
 ## Testes
@@ -92,7 +113,7 @@ No Windows, depois dos passos 2 e 3, também dá para dar dois cliques em `inici
 npm test
 ```
 
-São 19 testes automáticos do back end. Eles usam um **Foundry falso** (`tests/mock-foundry.js`) só para conferir o comportamento do servidor sem gastar cota: validação, multi-turno, conversa expirada, demora, erros do agente, falha de rede, falta de login, limite de uso, formato antigo do Foundry, privacidade dos logs, cabeçalhos de segurança e ausência de segredos no front end. A aplicação em si sempre fala com o Foundry de verdade.
+São 28 testes automáticos do back end. Eles usam um **Foundry falso** (`tests/mock-foundry.js`) só para conferir o comportamento do servidor sem gastar cota: validação, multi-turno, conversa expirada, demora, erros do agente, falha de rede, falta de login, limite de uso, formato antigo do Foundry, streaming (pedaços, multi-turno, recusa do Foundry, falha no meio, desligado), privacidade dos logs, cabeçalhos de segurança e ausência de segredos no front end. A aplicação em si sempre fala com o Foundry de verdade.
 
 ## Diagnóstico da conexão
 
@@ -112,12 +133,14 @@ Ele mostra a conta do Azure usada, cria uma conversa e testa os formatos de cham
 │   ├── css/style.css
 │   ├── img/                ícone e ilustração
 │   └── js/
-│       ├── app.js          chat, histórico, erros, tema
+│       ├── app.js          chat, streaming, histórico, receitas salvas, erros, tema
+│       ├── montador.js     "Minha geladeira": monta a mensagem com ingredientes e preferências
+│       ├── cozinha.js      timers, lista de ingredientes, ouvir e ditar
 │       ├── markdown.js     markdown seguro (escapa HTML antes)
 │       └── theme.js        aplica o tema salvo
 ├── server/
-│   ├── app.js              rotas /api/chat, /api/health, /api/feedback e arquivos estáticos
-│   ├── foundry.js          token do Entra ID, conversas e Responses API
+│   ├── app.js              rotas /api/chat, /api/chat/stream, /api/health, /api/feedback e arquivos estáticos
+│   ├── foundry.js          token do Entra ID, conversas, Responses API e streaming
 │   ├── validate.js         validação da mensagem
 │   └── config.js           leitura do .env
 ├── tests/                  testes do back end e Foundry falso
@@ -140,11 +163,16 @@ Ele mostra a conta do Azure usada, cria uma conversa e testa os formatos de cham
 - **Custos.** Modelo `gpt-5-mini`, limite de 20 mensagens por minuto por usuário e de 1000 caracteres por mensagem.
 - **Segurança da página.** Content-Security-Policy restrita (só scripts e estilos do próprio site), o markdown escapa todo HTML antes de formatar e o servidor bloqueia acesso a arquivos fora de `public/`.
 - **Formato da chamada ao agente.** A documentação do Foundry mudou durante o projeto: o campo antigo `agent` passou a ser `agent_reference`. O back end usa o formato atual e, se o Foundry recusar com erro 400, tenta o outro uma vez e lembra qual funcionou.
+- **Streaming com reserva.** O back end lê os eventos do Foundry (Server-Sent Events) e repassa ao navegador uma linha de JSON por pedaço. O tempo limite de 60 s vale para o intervalo entre pedaços. Se o Foundry recusar o streaming, o servidor passa a pedir a resposta inteira sem o usuário perceber. `STREAMING=off` desliga.
+- **Botão "Parar".** Quando o usuário interrompe, o navegador fecha a conexão e o back end cancela a chamada ao Foundry, para não gastar à toa.
+- **Recursos de cozinha no navegador.** Timers, voz e receitas salvas usam recursos do próprio navegador, sem bibliotecas e sem enviar dados ao servidor.
 - **Conversa expirada.** Se o Foundry não encontrar a conversa salva no navegador, o back end começa outra e avisa o usuário.
 
 ## Limitações conhecidas
 
-- A resposta aparece de uma vez (sem streaming).
+- Ditado por voz e leitura em voz alta dependem do navegador (funcionam no Chrome e no Edge; o ditado não existe no Firefox).
+- As receitas salvas e as escolhas da "Minha geladeira" ficam só no navegador.
+- Os timers param se a página for fechada.
 - O histórico de conversas fica salvo só no navegador; em outro aparelho ele não aparece.
 - O limite de mensagens por minuto fica na memória do servidor e zera quando ele reinicia.
 

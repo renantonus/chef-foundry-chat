@@ -2,6 +2,7 @@
  * Servidor HTTP (back end / proxy).
  * - Serve os arquivos do front end (pasta public).
  * - POST /api/chat: valida a mensagem, chama o agente no Foundry e devolve a resposta.
+ * - POST /api/chat/stream: igual, mas devolve a resposta aos poucos (streaming).
  * - GET  /api/health: diz se o servidor está configurado (sem expor nenhum valor).
  * - POST /api/feedback: registra 👍/👎 (só a contagem, sem o conteúdo da conversa).
  *
@@ -84,41 +85,111 @@ function createApp({ config, client, logger = console }) {
   const missing = missingConfig(config);
   const feedback = { up: 0, down: 0 };
 
-  async function handleChat(req, res) {
+  /** Lê e valida o pedido do chat. Se algo estiver errado, já responde o erro e devolve null. */
+  async function readChatRequest(req, res) {
     if (!(req.headers["content-type"] || "").includes("application/json")) {
-      return sendError(res, 415, "unsupported_media_type", "Envie a mensagem como JSON.");
+      sendError(res, 415, "unsupported_media_type", "Envie a mensagem como JSON.");
+      return null;
     }
     if (!allow(req.socket.remoteAddress || "local")) {
-      return sendError(res, 429, "rate_limit", FRIENDLY.rate_limit.message);
+      sendError(res, 429, "rate_limit", FRIENDLY.rate_limit.message);
+      return null;
     }
     let body;
     try { body = await readJsonBody(req); } catch (err) {
-      if (err.code === "too_large") return sendError(res, 413, "too_large", "A mensagem é grande demais.");
-      return sendError(res, 400, "bad_json", "Formato inválido. Envie um JSON com o campo \"message\".");
+      if (err.code === "too_large") sendError(res, 413, "too_large", "A mensagem é grande demais.");
+      else sendError(res, 400, "bad_json", "Formato inválido. Envie um JSON com o campo \"message\".");
+      return null;
     }
     const v = validateChatBody(body, config.maxMessageLength);
-    if (!v.ok) return sendError(res, v.status, "invalid_message", v.error);
-    if (missing.length) return sendError(res, 503, "not_configured", "O Chef ainda não foi configurado no servidor.");
+    if (!v.ok) { sendError(res, v.status, "invalid_message", v.error); return null; }
+    if (missing.length) { sendError(res, 503, "not_configured", "O Chef ainda não foi configurado no servidor."); return null; }
+    return v;
+  }
 
+  /**
+   * Conversa com o agente: cria a conversa no Foundry se ainda não existir e envia a mensagem.
+   * `ask(conversationId)` faz o envio (de uma vez ou em streaming) e devolve o texto da resposta.
+   */
+  async function converse(v, ask) {
+    let conversationId = v.conversationId;
+    let notice = null;
+    if (!conversationId) conversationId = await client.createConversation();
+    let reply;
     try {
-      let conversationId = v.conversationId;
-      let notice = null;
-      if (!conversationId) conversationId = await client.createConversation();
-      let reply;
-      try {
-        reply = await client.sendMessage(conversationId, v.message);
-      } catch (err) {
-        // A conversa salva no navegador pode ter expirado no Foundry: começa outra e tenta uma vez.
-        if (err.code !== "conversation_not_found" || !v.conversationId) throw err;
-        conversationId = await client.createConversation();
-        reply = await client.sendMessage(conversationId, v.message);
-        notice = "A conversa anterior não estava mais disponível, então comecei uma nova.";
-      }
-      return sendJson(res, 200, { reply, conversationId, notice });
+      reply = await ask(conversationId);
+    } catch (err) {
+      // A conversa salva no navegador pode ter expirado no Foundry: começa outra e tenta uma vez.
+      if (err.code !== "conversation_not_found" || !v.conversationId) throw err;
+      conversationId = await client.createConversation();
+      reply = await ask(conversationId);
+      notice = "A conversa anterior não estava mais disponível, então comecei uma nova.";
+    }
+    return { reply, conversationId, notice };
+  }
+
+  function logAgentError(err) {
+    logger.error(`[agente] falha: ${err.code || "erro"}${err.httpStatus ? " (HTTP " + err.httpStatus + ")" : ""} - ${err.message}`);
+  }
+
+  /** POST /api/chat: devolve a resposta inteira, de uma vez. */
+  async function handleChat(req, res) {
+    const v = await readChatRequest(req, res);
+    if (!v) return;
+    try {
+      return sendJson(res, 200, await converse(v, (id) => client.sendMessage(id, v.message)));
     } catch (err) {
       const f = FRIENDLY[err.code] || FRIENDLY.default;
-      logger.error(`[agente] falha: ${err.code || "erro"}${err.httpStatus ? " (HTTP " + err.httpStatus + ")" : ""} - ${err.message}`);
+      logAgentError(err);
       return sendError(res, f.status, err.code || "agent_error", f.message);
+    }
+  }
+
+  /**
+   * POST /api/chat/stream: devolve a resposta aos poucos, uma linha de JSON por evento (NDJSON):
+   *   {"type":"meta","conversationId":"..."}   id da conversa (antes do primeiro pedaço)
+   *   {"type":"delta","text":"..."}            pedaço do texto
+   *   {"type":"done","reply":"...","conversationId":"...","notice":null}
+   *   {"type":"error","message":"..."}         falha no meio da resposta (mensagem amigável)
+   * Se a falha acontecer antes do primeiro pedaço, a resposta é um erro JSON comum, igual ao /api/chat.
+   */
+  async function handleChatStream(req, res) {
+    const v = await readChatRequest(req, res);
+    if (!v) return;
+    // Se o navegador fechar a conexão (botão "Parar"), cancela a chamada ao Foundry.
+    const abort = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) abort.abort(); });
+
+    let started = false;
+    const write = (event) => {
+      if (!started) {
+        started = true;
+        res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no", ...SECURITY_HEADERS });
+      }
+      res.write(JSON.stringify(event) + "\n");
+    };
+    try {
+      const result = await converse(v, (id) => {
+        if (!config.streaming) return client.sendMessage(id, v.message, abort.signal);
+        return client.streamMessage(id, v.message, (text) => {
+          if (!started) write({ type: "meta", conversationId: id });
+          write({ type: "delta", text });
+        }, abort.signal);
+      });
+      if (!started) {
+        // Sem streaming: manda a resposta inteira como um pedaço só.
+        write({ type: "meta", conversationId: result.conversationId });
+        write({ type: "delta", text: result.reply });
+      }
+      write({ type: "done", ...result });
+      res.end();
+    } catch (err) {
+      if (abort.signal.aborted) return res.end(); // o usuário parou: não é erro
+      const f = FRIENDLY[err.code] || FRIENDLY.default;
+      logAgentError(err);
+      if (!started) return sendError(res, f.status, err.code || "agent_error", f.message);
+      write({ type: "error", code: err.code || "agent_error", message: f.message });
+      res.end();
     }
   }
 
@@ -149,11 +220,15 @@ function createApp({ config, client, logger = console }) {
     const { pathname } = new URL(req.url, "http://localhost");
     try {
       if (pathname === "/api/health" && req.method === "GET") {
-        return sendJson(res, 200, { ok: true, configured: missing.length === 0, agent: config.agentName || null });
+        return sendJson(res, 200, { ok: true, configured: missing.length === 0, agent: config.agentName || null, streaming: !!config.streaming });
       }
       if (pathname === "/api/chat") {
         if (req.method !== "POST") return sendError(res, 405, "method_not_allowed", "Use POST.");
         return await handleChat(req, res);
+      }
+      if (pathname === "/api/chat/stream") {
+        if (req.method !== "POST") return sendError(res, 405, "method_not_allowed", "Use POST.");
+        return await handleChatStream(req, res);
       }
       if (pathname === "/api/feedback" && req.method === "POST") return await handleFeedback(req, res);
       if (pathname.startsWith("/api/")) return sendError(res, 404, "not_found", "Rota não encontrada.");

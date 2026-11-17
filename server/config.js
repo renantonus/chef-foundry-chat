@@ -39,7 +39,9 @@ function getConfig(env = process.env) {
     agentVersion: (env.FOUNDRY_AGENT_VERSION || "").trim(), // opcional: sem valor, usa a versão mais recente
     timeoutMs: parseInt(env.AGENT_TIMEOUT_MS, 10) || 60000,
     maxMessageLength: parseInt(env.MAX_MESSAGE_LENGTH, 10) || 1000,
-    rateLimitPerMinute: parseInt(env.RATE_LIMIT_PER_MINUTE, 10) || 20
+    rateLimitPerMinute: parseInt(env.RATE_LIMIT_PER_MINUTE, 10) || 20,
+    // Resposta aparecendo aos poucos. STREAMING=off volta para a resposta de uma vez só.
+    streaming: String(env.STREAMING || "on").trim().toLowerCase() !== "off"
   };
 }
 

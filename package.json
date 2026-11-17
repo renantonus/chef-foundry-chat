@@ -1,6 +1,6 @@
 {
   "name": "chef-de-geladeira-vazia-foundry",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Interface web de chat para o agente Chef de Geladeira Vazia (automatenan) no Microsoft Foundry.",
   "private": true,
   "main": "server.js",
