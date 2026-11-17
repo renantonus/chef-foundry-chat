@@ -31,7 +31,9 @@ function loadEnvFile(file = path.join(__dirname, "..", ".env")) {
 /** Monta a configuração a partir das variáveis de ambiente. */
 function getConfig(env = process.env) {
   return {
-    host: env.HOST || "127.0.0.1",
+    // No PC, escuta só em 127.0.0.1 (ninguém da rede acessa). Publicado no Azure App Service
+    // (que define WEBSITE_SITE_NAME), precisa escutar em todas as interfaces.
+    host: env.HOST || (env.WEBSITE_SITE_NAME ? "0.0.0.0" : "127.0.0.1"),
     port: parseInt(env.PORT, 10) || 3000,
     // Endpoint do PROJETO no Foundry, ex.: https://<recurso>.services.ai.azure.com/api/projects/<projeto>
     endpoint: (env.FOUNDRY_PROJECT_ENDPOINT || "").trim().replace(/\/+$/, ""),

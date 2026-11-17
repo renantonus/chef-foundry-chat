@@ -93,6 +93,45 @@ Timers, voz, receitas salvas e a "Minha geladeira" rodam só no navegador. Nada 
 
 No Windows, depois dos passos 2 e 3, também dá para dar dois cliques em `iniciar.bat`: ele instala as dependências, sobe o servidor e abre o navegador.
 
+## Publicar na internet (Azure App Service)
+
+No PC, o token do agente vem do `az login`. Num servidor isso não existe, então a aplicação publicada usa **Managed Identity**: o próprio Azure entrega o token à aplicação. Assim **não há senha nem chave em lugar nenhum** — nem no código, nem nas configurações do site.
+
+Os comandos abaixo rodam no PowerShell, dentro da pasta do projeto, com o `az login` já feito. Troque `chef-de-geladeira` por um nome livre (ele vira o endereço do site).
+
+1. **Crie o site e publique** (plano gratuito F1):
+   ```
+   az webapp up --name chef-de-geladeira --runtime "NODE:20-lts" --sku F1 --location brazilsouth
+   ```
+   O `.env` e o `node_modules` não sobem: estão no `.gitignore`, que o comando respeita. As dependências são instaladas no servidor.
+
+2. **Ligue a Managed Identity** e guarde o id dela:
+   ```
+   $principal = az webapp identity assign --name chef-de-geladeira --query principalId --output tsv
+   ```
+
+3. **Dê a permissão mínima no projeto do Foundry.** O papel é o **Foundry Agent Consumer**, que só deixa conversar com o agente, sem poder alterá-lo:
+   ```
+   $assinatura = az account show --query id --output tsv
+   $escopo = "/subscriptions/$assinatura/resourceGroups/<grupo>/providers/Microsoft.CognitiveServices/accounts/<recurso>/projects/<projeto>"
+   az role assignment create --assignee-object-id $principal --assignee-principal-type ServicePrincipal --role "eed3b665-ab3a-47b6-8f48-c9382fb1dad6" --scope $escopo
+   ```
+   `<grupo>`, `<recurso>` e `<projeto>` aparecem na página de visão geral do projeto no portal do Foundry.
+
+4. **Configure as variáveis do site:**
+   ```
+   az webapp config appsettings set --name chef-de-geladeira --settings FOUNDRY_PROJECT_ENDPOINT="https://<recurso>.services.ai.azure.com/api/projects/<projeto>" FOUNDRY_AGENT_NAME="automatenan"
+   ```
+
+5. Abra `https://chef-de-geladeira.azurewebsites.net`. A permissão pode levar alguns minutos para valer; se aparecer erro de autenticação, espere e recarregue.
+
+### Antes de deixar o site público
+
+Um site aberto deixa qualquer pessoa conversar com o agente, e cada mensagem consome a cota da assinatura. Duas proteções:
+
+- O limite de mensagens por minuto por usuário já está ligado (`RATE_LIMIT_PER_MINUTE`).
+- Para restringir quem entra, ligue a autenticação do próprio App Service (no portal: **Authentication → Add identity provider → Microsoft**). Aí só quem tem conta da organização abre o site, e nenhuma linha de código muda.
+
 ## Variáveis de ambiente
 
 | Variável | Obrigatória | Para que serve |
@@ -105,7 +144,8 @@ No Windows, depois dos passos 2 e 3, também dá para dar dois cliques em `inici
 | `MAX_MESSAGE_LENGTH` | Não | Tamanho máximo da mensagem (padrão 1000) |
 | `RATE_LIMIT_PER_MINUTE` | Não | Mensagens por minuto por usuário (padrão 20) |
 | `STREAMING` | Não | `on` (padrão) mostra a resposta aos poucos; `off` devolve a resposta de uma vez |
-| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Só para publicar | Login por service principal quando a aplicação roda num servidor online, sem `az login` |
+| `HOST` | Não | Endereço onde o servidor escuta. No PC é `127.0.0.1`; publicado no App Service passa a ser `0.0.0.0` sozinho |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Raramente | Login por service principal, para hospedagem fora do Azure. No App Service não são necessários: a Managed Identity resolve |
 
 ## Testes
 
@@ -113,7 +153,7 @@ No Windows, depois dos passos 2 e 3, também dá para dar dois cliques em `inici
 npm test
 ```
 
-São 28 testes automáticos do back end. Eles usam um **Foundry falso** (`tests/mock-foundry.js`) só para conferir o comportamento do servidor sem gastar cota: validação, multi-turno, conversa expirada, demora, erros do agente, falha de rede, falta de login, limite de uso, formato antigo do Foundry, streaming (pedaços, multi-turno, recusa do Foundry, falha no meio, desligado), privacidade dos logs, cabeçalhos de segurança e ausência de segredos no front end. A aplicação em si sempre fala com o Foundry de verdade.
+São 29 testes automáticos do back end. Eles usam um **Foundry falso** (`tests/mock-foundry.js`) só para conferir o comportamento do servidor sem gastar cota: validação, multi-turno, conversa expirada, demora, erros do agente, falha de rede, falta de login, limite de uso, formato antigo do Foundry, streaming (pedaços, multi-turno, recusa do Foundry, falha no meio, desligado), privacidade dos logs, cabeçalhos de segurança, endereço de escuta e ausência de segredos no front end. A aplicação em si sempre fala com o Foundry de verdade.
 
 ## Diagnóstico da conexão
 
@@ -154,7 +194,7 @@ Ele mostra a conta do Azure usada, cria uma conversa e testa os formatos de cham
 ## Decisões técnicas
 
 - **Credenciais só no servidor.** O front end conversa apenas com `/api/chat`. Não há endpoint, token ou chave em nenhum arquivo de `public/` (um teste confere isso).
-- **Sem chave no `.env` para rodar no PC.** O `DefaultAzureCredential` usa o login do `az login`, então nem o `.env` guarda segredo. Para publicar, o login passa a ser por service principal, configurado nas variáveis do serviço de hospedagem, nunca no código.
+- **Sem chave em lugar nenhum.** O `DefaultAzureCredential` usa o login do `az login` no PC e a Managed Identity quando publicado no Azure. Nos dois casos não existe senha para guardar: nem no código, nem no `.env`, nem nas configurações do site.
 - **Servidor com o Node puro (`http`).** Uma dependência só (`@azure/identity`), menos coisa para instalar e para explicar.
 - **Chamada REST em vez do SDK do projeto.** As rotas `/openai/v1/conversations` e `/openai/v1/responses` deixam explícito o que acontece em cada passo.
 - **Token em cache.** O token é reaproveitado até 5 minutos antes de expirar, para não pedir um novo a cada mensagem.
@@ -179,4 +219,6 @@ Ele mostra a conta do Azure usada, cria uma conversa e testa os formatos de cham
 ## Créditos e referências
 
 - [@azure/identity](https://www.npmjs.com/package/@azure/identity) (Microsoft): autenticação no Entra ID.
+- [Papéis do Microsoft Foundry (RBAC)](https://learn.microsoft.com/azure/foundry/concepts/rbac-foundry): papel Foundry Agent Consumer usado na publicação.
+- [Managed identity no Azure App Service](https://learn.microsoft.com/azure/app-service/overview-managed-identity).
 - Documentação do Microsoft Foundry: [quickstart de agentes](https://learn.microsoft.com/azure/foundry/agents/quickstarts/prompt-agent) e [exemplos REST de Responses e Conversations](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/function-calling).

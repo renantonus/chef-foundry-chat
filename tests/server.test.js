@@ -290,3 +290,9 @@ test("streaming: demora excessiva vira 504", async () => {
   assert.strictEqual(res.status, 504);
   await app.close();
 });
+
+test("no PC escuta só em 127.0.0.1; publicado no App Service, em todas as interfaces", () => {
+  assert.strictEqual(getConfig({}).host, "127.0.0.1");
+  assert.strictEqual(getConfig({ WEBSITE_SITE_NAME: "chef-de-geladeira" }).host, "0.0.0.0");
+  assert.strictEqual(getConfig({ WEBSITE_SITE_NAME: "chef-de-geladeira", HOST: "127.0.0.1" }).host, "127.0.0.1");
+});
